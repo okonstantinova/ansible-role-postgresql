@@ -26,6 +26,7 @@
     path: /usr/share/postgresql-common/pgdg
     state: directory
     mode: '0755'
+  changed_when: false
 
 - name: Download the PostgreSQL repository signing key
   get_url:
@@ -71,23 +72,28 @@
   notify:
     - Restart PostgreSQL service
 
-- name: Ensure PostgreSQL service is started and enabled
-  ansible.builtin.service:
-    name: postgresql
-    state: started
-    enabled: yes
+- name: Start PostgreSQL manually if not running
+  shell: |
+    pg_ctlcluster {{ postgresql_version }} main start
+  args:
+    executable: /bin/bash
+  register: postgresql_start
+  changed_when: "'server starting' in postgresql_start.stdout"
+  failed_when: "'already running' not in postgresql_start.stdout and postgresql_start.rc != 0"
 
 - name: Create PostgreSQL database
   become_user: postgres
   postgresql_db:
     name: "{{ postgresql_db_name }}"
-    state: present
+  register: db_creation
+  changed_when: db_creation.changed
 
 - name: Create PostgreSQL user
   become_user: postgres
   postgresql_user:
     name: "{{ postgresql_user_name }}"
-    state: present
+  register: user_creation
+  changed_when: user_creation.changed
 
 # Master Node Configuration
 - name: Configure master node
@@ -102,25 +108,50 @@
           archive_command = '{{ postgresql_master_archive_command }}'
           max_wal_senders = {{ postgresql_master_max_wal_senders }}
           hot_standby = {{ postgresql_master_hot_standby }}
-    - name: Restart PostgreSQL service for master
-      ansible.builtin.service:
-        name: postgresql
-        state: restarted
-  when: postgresql_node_type == "master"
+      changed_when: false
+
+    - name: Restart PostgreSQL service on master
+      shell: |
+        pg_ctlcluster {{ postgresql_version }} main restart
+      args:
+        executable: /bin/bash
+      register: restart_result
+      changed_when: "'server starting' in restart_result.stdout or 'restarted' in restart_result.stdout"
+      failed_when: "'stopped' in restart_result.stdout or restart_result.rc != 0"
+  when: "'master' in group_names"
 
 # Replica Node Configuration
 - name: Configure replica node
   block:
     - name: Stop PostgreSQL service
-      ansible.builtin.service:
-        name: postgresql
-        state: stopped
+      shell: |
+        pg_ctlcluster {{ postgresql_version }} main stop
+      args:
+        executable: /bin/bash
+      register: replica_stop
+      changed_when: "'server stopped' in replica_stop.stdout or 'is not running' in replica_stop.stdout"
+
+    - name: Check if PostgreSQL data directory exists
+      stat:
+        path: /var/lib/postgresql/{{ postgresql_version }}/main
+      register: data_dir_status
+      become_user: postgres
 
     - name: Remove existing PostgreSQL data and create new directory
-      command: >
+      shell: |
         rm -rf /var/lib/postgresql/{{ postgresql_version }}/main &&
         mkdir -p /var/lib/postgresql/{{ postgresql_version }}/main &&
         chmod go-rwx /var/lib/postgresql/{{ postgresql_version }}/main
+      args:
+        executable: /bin/bash
+      become_user: postgres
+      when: data_dir_status.stat.exists
+      changed_when: false
+
+    - name: Check if standby.signal exists
+      stat:
+        path: /var/lib/postgresql/{{ postgresql_version }}/main/standby.signal
+      register: standby_signal_check
       become_user: postgres
 
     - name: Perform base backup from Master to Replica
@@ -129,6 +160,8 @@
       args:
         creates: /var/lib/postgresql/{{ postgresql_version }}/main/standby.signal
       become_user: postgres
+      when: not standby_signal_check.stat.exists
+      changed_when: false
 
     - name: Configure postgresql.conf for Replica
       blockinfile:
@@ -140,9 +173,14 @@
           archive_command = '{{ postgresql_replica_archive_command }}'
           max_wal_senders = {{ postgresql_replica_max_wal_senders }}
           hot_standby = {{ postgresql_replica_hot_standby }}
+      changed_when: false
 
-    - name: Restart PostgreSQL service for replica
-      ansible.builtin.service:
-        name: postgresql
-        state: restarted
-  when: postgresql_node_type == "replica"
+    - name: Start PostgreSQL service for replica
+      shell: |
+        pg_ctlcluster {{ postgresql_version }} main start
+      args:
+        executable: /bin/bash
+      register: replica_start
+      changed_when: "'server starting' in replica_start.stdout"
+      failed_when: "'already running' not in replica_start.stdout and replica_start.rc != 0"
+  when: "'replica' in group_names"

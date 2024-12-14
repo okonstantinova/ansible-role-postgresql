@@ -9,39 +9,26 @@ driver:
   name: docker
 
 platforms:
-  - name: master
+  - name: master-node
     image: geerlingguy/docker-ubuntu2004-ansible
+    groups:
+      - master
     privileged: true
     pre_build_image: true
-    environment:
-      POSTGRESQL_NODE_TYPE: "master"
+    networks:
+      - name: postgresql-network
 
-  - name: replica
+  - name: replica-node
     image: geerlingguy/docker-ubuntu2004-ansible
+    groups:
+      - replica
     privileged: true
     pre_build_image: true
-    environment:
-      POSTGRESQL_NODE_TYPE: "replica"
+    networks:
+      - name: postgresql-network
 
 provisioner:
   name: ansible
-  lint: |
-    yamllint .
-    ansible-lint
-
-scenario:
-  name: default
-  test_sequence:
-    - dependency
-    - lint
-    - create
-    - prepare
-    - converge
-    - idempotence
-    - verify
-    - destroy
 
 verifier:
   name: ansible
-  lint: |
-    ansible-lint
