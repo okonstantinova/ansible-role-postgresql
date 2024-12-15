@@ -155,15 +155,15 @@
 
     - name: Check if PostgreSQL data directory exists
       stat:
-        path: /var/lib/postgresql/{{ postgresql_version }}/main
+        path: {{ postgresql_data_dir }}
       register: data_dir_status
       become_user: postgres
 
     - name: Remove existing PostgreSQL data and create new directory
       shell: |
-        rm -rf /var/lib/postgresql/{{ postgresql_version }}/main &&
-        mkdir -p /var/lib/postgresql/{{ postgresql_version }}/main &&
-        chmod go-rwx /var/lib/postgresql/{{ postgresql_version }}/main
+        rm -rf {{ postgresql_data_dir }} &&
+        mkdir -p {{ postgresql_data_dir }} &&
+        chmod go-rwx {{ postgresql_data_dir }}
       args:
         executable: /bin/bash
       become_user: postgres
@@ -172,15 +172,15 @@
 
     - name: Check if standby.signal exists
       stat:
-        path: /var/lib/postgresql/{{ postgresql_version }}/main/standby.signal
+        path: {{ postgresql_data_dir }}/standby.signal
       register: standby_signal_check
       become_user: postgres
 
     - name: Perform base backup from Master to Replica
       command: >
-        pg_basebackup -P -R -X stream -c fast -h {{ master_host }} -U {{ replication_user }} -D /var/lib/postgresql/{{ postgresql_version }}/main
+        pg_basebackup -P -R -X stream -c fast -h {{ master_host }} -U {{ replication_user }} -D {{ postgresql_data_dir }}
       args:
-        creates: /var/lib/postgresql/{{ postgresql_version }}/main/standby.signal
+        creates: {{ postgresql_data_dir }}/standby.signal
       become_user: postgres
       when: not standby_signal_check.stat.exists
       changed_when: false
